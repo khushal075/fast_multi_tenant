@@ -44,3 +44,13 @@ docker-compose exec web poetry run python -m app.seed
 ```bash
 # Test the 'default' tenant
 curl -H "X-Tenant-ID: default" http://localhost:8000/test-db
+```
+
+## 🛠 Project Architecture
+**Isolation Strategy:** Each tenant has its own dedicated PostgreSQL Schema.
+
+**Routing:** Custom middleware detects the X-Tenant-ID header and dynamically sets the database search_path.
+
+### **Models**
+- **Tenant:** Stored in the public schema (Global).
+- **User & Role:** Stored in individual tenant schemas (Isolated).
