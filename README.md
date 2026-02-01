@@ -13,3 +13,34 @@ A high-performance, event-driven scaffold demonstrating Staff-level architecture
 - **Framework:** FastAPI
 - **Data:** PostgreSQL + SQLAlchemy 2.0
 - **Cache:** Redis
+
+
+## 🚀 How to Run
+
+### 1. Prerequisites
+* **Docker** and **Docker Compose** installed.
+* **Git** (configured with your SSH keys).
+
+### 2. Setup & Start
+Run these commands from the project root:
+
+```bash
+# 1. Clone the repository
+git clone git@github.com:khushal075/fast_multi_tenant.git
+cd fast_multi_tenant
+
+# 2. Build and start the Docker containers in detached mode
+# This starts the PostgreSQL database and the FastAPI application
+docker-compose up --build -d
+```
+
+### 3. Initialize Database
+```bash
+# Seeding initial DB setup
+docker-compose exec web poetry run python -m app.seed
+```
+
+### 4. Verify the Setup
+```bash
+# Test the 'default' tenant
+curl -H "X-Tenant-ID: default" http://localhost:8000/test-db
