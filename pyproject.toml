@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "multi-tenant-platform"
+version = "0.1.0"
+description = "High-performance Multi-tenant SaaS Scaffold with Schema Isolation"
+authors = ["Khushal Singh Chauhan <khushal.jobss@gmail.com>"]
+readme = "README.md"
+package-mode=false
+
+[tool.poetry.dependencies]
+python = "^3.12"
+pydantic-settings = "^2.12.0"
+fastapi = "^0.128.0"
+uvicorn = {extras = ["standard"], version = "^0.40.0"}
+sqlalchemy = "^2.0.46"
+alembic = "^1.18.3"
+psycopg = {extras = ["binary"], version = "^3.1.18"}
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
