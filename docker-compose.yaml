@@ -4,16 +4,16 @@ services:
     container_name: multi_tenant_db
     restart: always
     environment:
-      - POSTGRES_USER=local
-      - POSTGRES_PASSWORD=local
-      - POSTGRES_DB=app_db
+      POSTGRES_USER: local
+      POSTGRES_PASSWORD: local
+      POSTGRES_DB: app_db
     ports:
-      - '5432:5432'
+      - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data  # Fixed path: lib, not libs
+      - postgres_data:/var/lib/postgresql/data
     networks:
       - app-network
-    healthcheck:                                # THE MISSING PIECE
+    healthcheck:
       test: ["CMD-SHELL", "pg_isready -U local -d app_db"]
       interval: 5s
       timeout: 5s
@@ -26,10 +26,8 @@ services:
       - .:/app
     ports:
       - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql+psycopg://local:local@db:5432/app_db
     env_file:
-      - .env
+      - config.env          # fix: was ".env" — file is named config.env
     depends_on:
       db:
         condition: service_healthy

@@ -1,48 +1,73 @@
-
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from starlette.responses import HTMLResponse
 
-from app.core.tenant_context import set_current_tenant, _tenant_id_ctx, get_current_tenant
-from app.database.session import SessionLocal
+from app.core.config import settings
+from app.core.tenant_context import get_current_tenant
+from app.database.session import get_db
+from app.middleware.tenant_gate import TenantMiddleware
+from app.api.v1.endpoints.tenants import router as tenants_router
 
-app = FastAPI()
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    version="0.1.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+)
 
-# ---- ADD MIDDLE-WARE ----
-@app.middleware("http")
-async def tenant_middleware(request: Request, call_next):
-    tenant_id = request.headers.get("X-Tenant-Id")
+# ── Middleware ────────────────────────────────────────────────────────────────
 
-    token = _tenant_id_ctx.set(tenant_id)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    # This sets the stage so SQLAlchemy listener fixed earlier knows which schema to use
-    set_current_tenant(tenant_id)
-    try:
-        response = await call_next(request)
-        return response
-    finally:
-        # Reset the context for the next request in this thread / worker
-        _tenant_id_ctx.reset(token)
+# Tenant resolution — must be added after CORSMiddleware
+# (Starlette applies middleware in reverse registration order)
+app.add_middleware(TenantMiddleware)
 
-# ----- YOUR ROUTES FOLLOW ----
-@app.get("/")
+# ── Routers ───────────────────────────────────────────────────────────────────
+
+# Tenant provisioning — no X-Tenant-ID required (listed in PUBLIC_PATHS)
+app.include_router(tenants_router, prefix=settings.API_V1_STR)
+
+# Future routers follow this pattern:
+# from app.api.v1.endpoints.users import router as users_router
+# app.include_router(users_router, prefix=settings.API_V1_STR)
+
+# ── Public routes ─────────────────────────────────────────────────────────────
+
+@app.get("/", tags=["health"])
 async def read_root():
+    return {"message": f"{settings.PROJECT_NAME} is running"}
+
+
+@app.get("/health", tags=["health"])
+async def health_check():
+    return {"status": "ok"}
+
+
+# ── Debug ─────────────────────────────────────────────────────────────────────
+
+@app.get("/debug/context", tags=["debug"])
+async def debug_context(db: AsyncSession = Depends(get_db)):
+    """
+    Returns current tenant context and DB connection info.
+    Requires X-Tenant-ID. Remove before production.
+    """
+    result = await db.execute(
+        text("SELECT current_database(), current_user, current_schemas(false)")
+    )
+    info = result.fetchone()
+
     return {
-        "message": "Multi-tenant API is alive"
+        "tenant_id": str(get_current_tenant()),
+        "database": info[0],
+        "user": info[1],
+        "active_schemas": info[2],
     }
-
-@app.get("/test-db")
-def test_db():
-    db = SessionLocal()
-    try:
-        # This will tell us the exact database name and current user
-        info = db.execute(text("SELECT current_database(), current_user, current_schemas(false)")).fetchone()
-        return {
-            "database": info[0],
-            "user": info[1],
-            "active_schemas": info[2],
-            "tenant_id": get_current_tenant()
-        }
-    finally:
-        db.close()
-

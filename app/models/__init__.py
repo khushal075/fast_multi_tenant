@@ -1,4 +1,6 @@
-# Import all models so that alembic can find them via Base.metadata
-
-from app.database.base import Base
+from app.database.base import PublicBase, TenantBase
 from app.models.tenant import Tenant
+from app.models.user import User
+from app.models.role import Role
+
+__all__ = ["PublicBase", "TenantBase", "Tenant", "User", "Role"]

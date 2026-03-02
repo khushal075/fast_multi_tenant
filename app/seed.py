@@ -1,68 +1,57 @@
+import uuid
 import logging
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from app.database.session import engine
-from app.database.base import Base
+from app.database.session import sync_engine, SyncSessionLocal
+from app.database.base import PublicBase, TenantBase
+from app.models.tenant import Tenant
+from app.models.role import Role
 
-# Ensure User is imported so Base.metadata knows about it
-from app.models.user import User
-from app.core.tenant_context import set_current_tenant
-
-# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 def run_seed():
-    logger.info("--- Starting Multi-tenant Seed ---")
+    logger.info("--- Starting seed ---")
 
-    # Step 1: Create Schema and Infrastructure
-    # We use a separate connection with 'commit' to ensure the schema exists
-    with engine.connect() as conn:
-        with conn.begin():
-            logger.info("Creating 'tenants' table in public...")
-            conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS tenants (
-                    id SERIAL PRIMARY KEY,
-                    name VARCHAR(255) UNIQUE NOT NULL,
-                    schema_name VARCHAR(255) UNIQUE NOT NULL
-                );
-            """))
+    # Create all tables — use Alembic migrations in production
+    PublicBase.metadata.create_all(bind=sync_engine)
+    TenantBase.metadata.create_all(bind=sync_engine)
+    logger.info("Tables created.")
 
-            logger.info("Creating schema 'tenant_default'...")
-            conn.execute(text("CREATE SCHEMA IF NOT EXISTS tenant_default;"))
+    db: Session = SyncSessionLocal()
+    try:
+        existing = db.query(Tenant).filter_by(name="Default Tenant").first()
+        if not existing:
+            tenant = Tenant(
+                id=uuid.uuid4(),
+                name="Default Tenant",
+                is_active=True,
+            )
+            db.add(tenant)
+            db.commit()
+            db.refresh(tenant)
+            logger.info(f"Created tenant: {tenant.name} (id={tenant.id})")
 
-            logger.info("Inserting default tenant record...")
-            conn.execute(text("""
-                INSERT INTO tenants (name, schema_name) 
-                VALUES ('Default Tenant', 'tenant_default')
-                ON CONFLICT (name) DO NOTHING;
-            """))
+            for role_name in ("admin", "member", "viewer"):
+                db.add(Role(
+                    tenant_id=tenant.id,
+                    name=role_name,
+                    description=f"{role_name.capitalize()} role",
+                ))
+            db.commit()
+            logger.info("Seeded roles: admin, member, viewer")
+        else:
+            logger.info("Default tenant already exists — skipping.")
 
-    # Step 2: Create ORM Tables (Users, etc.)
-    # Note: We use engine.connect() + manual transaction to ensure SET search_path sticks
-    with engine.connect() as conn:
-        with conn.begin():
-            try:
-                logger.info("Syncing ORM models into 'tenant_default'...")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Seed failed: {e}")
+        raise
+    finally:
+        db.close()
 
-                # 1. Set the context for any subsequent session-based logic
-                set_current_tenant('default')
-
-                # 2. FORCE the search path on this specific connection
-                # This ensures Postgres puts 'users' in 'tenant_default'
-                conn.execute(text("SET search_path TO tenant_default, public"))
-
-                # 3. Create the tables
-                Base.metadata.create_all(bind=conn)
-
-                logger.info(f"DEBUG: Models found in Base: {list(Base.metadata.tables.keys())}")
-                logger.info("--- Seed Complete: 'tenant_default' is ready with tables! ---")
-
-            except Exception as e:
-                logger.error(f"Table Sync Failed: {e}")
-                raise e
+    logger.info("--- Seed complete ---")
 
 
 if __name__ == "__main__":

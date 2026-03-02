@@ -1,0 +1,15 @@
+# Local environment — contains localhost credentials, never commit
+config.local.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# IDE
+.idea/
+
+# Alembic
+alembic/versions/*.pyc

@@ -1,44 +1,63 @@
-from sqlalchemy import create_engine, event
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from app.core.config import settings
-from app.core.tenant_context import get_current_tenant
 
-engine = create_engine(
+from app.core.config import settings
+
+# ── Async engine — used by all FastAPI route handlers ─────────────────────────
+async_engine = create_async_engine(
     settings.SQLALCHEMY_DATABASE_URI,
     pool_pre_ping=True,
     pool_size=10,
     max_overflow=10,
-    echo=True,
+    echo=False,  # set True locally for SQL debugging, never in production
 )
 
-# Create session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# Tenant isolation engine hook
-from sqlalchemy import event
-
-
-# 1. REMOVE the @event.listens_for(engine, "before_cursor_execute") code entirely.
-
-# 2. ADD THIS instead:
-@event.listens_for(engine, "connect")
-def set_on_connect(dbapi_connection, connection_record):
-    """Sets the search path immediately upon establishing a new connection."""
-    # This is great for a base default
-    cursor = dbapi_connection.cursor()
-    cursor.execute("SET search_path TO public")
-    cursor.close()
+AsyncSessionLocal = async_sessionmaker(
+    bind=async_engine,
+    class_=AsyncSession,
+    autocommit=False,
+    autoflush=False,
+    expire_on_commit=False,
+)
 
 
-@event.listens_for(SessionLocal, "after_begin")
-def set_search_path_on_begin(session, transaction, connection):
+async def get_db() -> AsyncSession:
     """
-    Triggers at the start of every DB session.
-    This is the most reliable place for Psycopg 3.
-    """
-    tenant_id = get_current_tenant()
-    schema_name = f"tenant_{tenant_id}" if tenant_id else 'public'
+    FastAPI dependency — yields an async DB session and guarantees cleanup.
 
-    # We use the connection provided by the session start
-    connection.exec_driver_sql(f"SET search_path TO {schema_name}, public")
-    print(f"--- PATH SET TO {schema_name} ---")
+    Usage:
+        @app.get("/users")
+        async def list_users(db: AsyncSession = Depends(get_db)):
+            tenant_id = get_current_tenant()
+            result = await db.execute(
+                select(User).where(User.tenant_id == tenant_id)
+            )
+            return result.scalars().all()
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+
+# ── Sync engine — used only by middleware (run_in_executor) and seed scripts ──
+# Keeping a separate sync engine avoids mixing sync/async SQLAlchemy sessions,
+# which are not interchangeable and cause subtle runtime errors.
+sync_engine = create_engine(
+    # swap driver back to plain psycopg (no +asyncpg) for sync connections
+    settings.SQLALCHEMY_DATABASE_URI.replace("postgresql+psycopg", "postgresql+psycopg"),
+    pool_pre_ping=True,
+    pool_size=5,
+    max_overflow=5,
+    echo=False,
+)
+
+SyncSessionLocal = sessionmaker(
+    bind=sync_engine,
+    autocommit=False,
+    autoflush=False,
+)

@@ -1,14 +1,21 @@
+import uuid
 from contextvars import ContextVar
 from typing import Optional
 
-# This variable is unique to each 'task' or 'request'
-# Even if 1,000 requests hit at once, they won't leak into each other
-_tenant_id_ctx: ContextVar[Optional[str]] = ContextVar("tenant_id", default=None)
+# Stores the tenant's UUID for the duration of the current request.
+# ContextVar is safe for concurrent async requests — each request gets
+# its own isolated value, they cannot leak into each other.
+_tenant_id_ctx: ContextVar[Optional[uuid.UUID]] = ContextVar("tenant_id", default=None)
 
-def set_current_tenant(tenant_id: str) -> None:
-    """Stores the tenant ID for the duration of the current request."""
+
+def set_current_tenant(tenant_id: uuid.UUID) -> None:
+    """Set the tenant UUID for the current request context."""
     _tenant_id_ctx.set(tenant_id)
 
-def get_current_tenant() -> str:
-    """Retrieves the tenant ID for the current execution context."""
+
+def get_current_tenant() -> Optional[uuid.UUID]:
+    """
+    Retrieve the tenant UUID for the current request.
+    Returns None if called outside a tenant request context.
+    """
     return _tenant_id_ctx.get()

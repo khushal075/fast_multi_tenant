@@ -1,27 +1,35 @@
 import os
-from typing import List, Union
-
-from pydantic import AnyHttpUrl, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# ENV=local  → reads config.local.env  (local dev, Postgres at localhost)
+# ENV=docker → reads config.env        (inside Docker, Postgres at 'db')
+# Defaults to 'local' so running alembic/seed locally works without any setup
+_env = os.getenv("ENV", "local")
+_env_file = "config.local.env" if _env == "local" else "config.env"
+
+
 class Settings(BaseSettings):
-    project_name: str = 'Multi-tenant platform'
+    PROJECT_NAME: str = "Multi-Tenant Platform"
     API_V1_STR: str = "/api/v1"
 
-    POSTGRES_SERVER: str  # e.g., "db" (the Docker service name)
-    POSTGRES_USER: str  # e.g., "postgres"
+    POSTGRES_SERVER: str
+    POSTGRES_USER: str
     POSTGRES_PASSWORD: str
     POSTGRES_DB: str
+    POSTGRES_PORT: int = 5432
 
-    # Property engine uses to connect
     @property
     def SQLALCHEMY_DATABASE_URI(self) -> str:
-        # return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}/{self.POSTGRES_DB}"
-        return os.getenv("DATABASE_URL", "postgresql://local:local@db:5432/app_db")
+        return (
+            f"postgresql+psycopg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+        )
 
-    # Tell pydantic to read from .env file
-    model_config = SettingsConfigDict(env_file='config.env', case_sensitive=True, extra='ignore')
+    model_config = SettingsConfigDict(
+        env_file=_env_file,
+        case_sensitive=True,
+        extra="ignore",
+    )
 
 
-# Initialize it once so that it is singleton across the whole app
 settings = Settings()
