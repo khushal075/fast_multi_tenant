@@ -39,6 +39,7 @@ markers = [
     "integration: marks tests that require a live Postgres instance",
     "unit: marks pure unit tests with no external deps",
 ]
+pythonpath = ["."]
 
 # ── Coverage ──────────────────────────────────────────────────────────────────
 [tool.coverage.run]
@@ -59,8 +60,6 @@ exclude_lines = [
     "pass",
 ]
 
-[tool.pytest.ini_options]
-pythonpath = ["."]
 
 show_missing = true
 skip_covered = false
