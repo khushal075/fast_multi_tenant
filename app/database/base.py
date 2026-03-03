@@ -5,11 +5,14 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 
 
-class PublicBase(DeclarativeBase):
+class Base(DeclarativeBase):
     """
-    Base for shared / infrastructure tables that live in the public schema
-    and are NOT scoped to a tenant. Example: Tenant registry itself.
-    These tables do NOT get a tenant_id column.
+    Single declarative base for all models — one shared MetaData object.
+    This is required for SQLAlchemy to resolve ForeignKey references across
+    models (e.g. roles.tenant_id → public.tenants.id).
+
+    All models inherit from Base. Tenant-scoped models additionally
+    inherit from TenantMixin to get the tenant_id column.
     """
 
     @declared_attr
@@ -20,21 +23,20 @@ class PublicBase(DeclarativeBase):
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)
 
 
-class TenantBase(DeclarativeBase):
+class TenantMixin:
     """
-    Base for all tenant-scoped tables.
-    Every model that inherits from this automatically gets:
-      - tenant_id   (UUID, FK → public.tenants.id, non-nullable, indexed)
-      - created_at
-      - updated_at
+    Mixin that adds tenant_id to any model that needs row-level isolation.
 
-    This enforces row-level isolation at the platform level — no model
-    can accidentally be created without tenant scoping.
+    Usage:
+        class User(TenantMixin, Base):
+            ...
+
+    Every model with this mixin automatically gets:
+      - tenant_id (UUID, FK → public.tenants.id, non-nullable, indexed)
+
+    Because this is a mixin (not a second Base), the FK is resolved
+    within the same MetaData as the Tenant model — no cross-metadata errors.
     """
-
-    @declared_attr
-    def __tablename__(cls) -> str:
-        return cls.__name__.lower()
 
     @declared_attr
     def tenant_id(cls):
@@ -44,6 +46,3 @@ class TenantBase(DeclarativeBase):
             nullable=False,
             index=True,
         )
-
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)

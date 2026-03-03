@@ -1,11 +1,11 @@
 from logging.config import fileConfig
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, pool, text
 from alembic import context
 
 from app.core.config import settings
-from app.database.base import PublicBase, TenantBase
+from app.database.base import Base
 
-# Import all models so metadata is fully populated before migrations run
+# Import all models so Base.metadata is fully populated
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.role import Role
@@ -15,15 +15,11 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Combine metadata from both bases so all tables are visible to Alembic
-target_metadata = [PublicBase.metadata, TenantBase.metadata]
+target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    """
-    Generate SQL script without a live DB connection.
-    Useful for handing off to a DBA or reviewing changes before applying.
-    """
+    """Generate SQL script without a live DB connection."""
     url = settings.SQLALCHEMY_DATABASE_URI
     context.configure(
         url=url,
@@ -31,9 +27,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         include_schemas=True,
-        version_table_schema="public",
     )
-
     with context.begin_transaction():
         context.run_migrations()
 
@@ -41,11 +35,7 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     """
     Run migrations against a live database.
-
-    Row-level isolation model: all tenant data lives in a single shared schema.
-    There is only ONE migration pass — no per-tenant schema loop needed.
-    Tenant isolation is enforced by tenant_id columns on every data table,
-    not by Postgres schema separation.
+    Single migration pass — row-level isolation, one shared schema.
     """
     configuration = config.get_section(config.config_ini_section, {})
     configuration["sqlalchemy.url"] = settings.SQLALCHEMY_DATABASE_URI
@@ -61,10 +51,10 @@ def run_migrations_online() -> None:
             connection=connection,
             target_metadata=target_metadata,
             include_schemas=True,
-            version_table="alembic_version",
-            version_table_schema="public",
+            # Let Alembic manage alembic_version in the default schema
+            # without explicit schema qualification — avoids
+            # "relation public.alembic_version does not exist" on fresh DBs
         )
-
         with context.begin_transaction():
             context.run_migrations()
 

@@ -1,12 +1,12 @@
 from sqlalchemy import Column, Integer, String
 from sqlalchemy.orm import relationship
-from app.database.base import TenantBase
+from app.database.base import Base, TenantMixin
 
 
-class Role(TenantBase):
+class Role(TenantMixin, Base):
     """
-    Tenant-scoped role. Inherits tenant_id from TenantBase automatically.
-    Roles are isolated per tenant — 'admin' in tenant A is unrelated to 'admin' in tenant B.
+    Tenant-scoped role. Gets tenant_id automatically from TenantMixin.
+    Roles are isolated per tenant — 'admin' in tenant A is separate from tenant B.
     """
     __tablename__ = "roles"
 

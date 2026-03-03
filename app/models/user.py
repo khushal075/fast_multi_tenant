@@ -1,12 +1,12 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey
 from sqlalchemy.orm import relationship
-from app.database.base import TenantBase
+from app.database.base import Base, TenantMixin
 
 
-class User(TenantBase):
+class User(TenantMixin, Base):
     """
-    Tenant-scoped user. Inherits tenant_id from TenantBase automatically.
-    Every query against this table must filter by tenant_id for row-level isolation.
+    Tenant-scoped user. Gets tenant_id automatically from TenantMixin.
+    Every query must filter by tenant_id for row-level isolation.
     """
     __tablename__ = "users"
 

@@ -3,7 +3,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from app.database.session import sync_engine, SyncSessionLocal
-from app.database.base import PublicBase, TenantBase
+from app.database.base import Base
 from app.models.tenant import Tenant
 from app.models.role import Role
 
@@ -14,20 +14,14 @@ logger = logging.getLogger(__name__)
 def run_seed():
     logger.info("--- Starting seed ---")
 
-    # Create all tables — use Alembic migrations in production
-    PublicBase.metadata.create_all(bind=sync_engine)
-    TenantBase.metadata.create_all(bind=sync_engine)
+    Base.metadata.create_all(bind=sync_engine)
     logger.info("Tables created.")
 
     db: Session = SyncSessionLocal()
     try:
         existing = db.query(Tenant).filter_by(name="Default Tenant").first()
         if not existing:
-            tenant = Tenant(
-                id=uuid.uuid4(),
-                name="Default Tenant",
-                is_active=True,
-            )
+            tenant = Tenant(id=uuid.uuid4(), name="Default Tenant", is_active=True)
             db.add(tenant)
             db.commit()
             db.refresh(tenant)
