@@ -1,126 +1,155 @@
 """
-Shared pytest fixtures for fast_multi_tenant tests.
-
-Uses a real Postgres instance — same database as development and CI.
-CI spins up Postgres via the service container in ci.yml.
-Locally, run: docker-compose up db -d
-
-Each test gets a fully isolated async session wrapped in a transaction
-that is rolled back after the test — no data persists between tests
-and no teardown SQL is needed.
+Integration tests — exercises full FastAPI request/response cycle.
+Uses real Postgres via the db_session fixture (transaction rolled back after each test).
+Covers: public routes, tenant CRUD, missing header handling, inactive tenant.
 """
 import uuid
 import pytest
-import pytest_asyncio
-from httpx import AsyncClient, ASGITransport
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.pool import NullPool
+from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
-from app.database.base import Base
 from app.models.tenant import Tenant
-from app.models.role import Role
-from app.database.session import get_db
-from app.core.tenant_context import set_current_tenant, _tenant_id_ctx
-from app.main import app
 
 
-# ── Engine ────────────────────────────────────────────────────────────────────
-# NullPool: every test gets a fresh connection, nothing is pooled between tests.
-# This is important for transaction rollback isolation to work correctly.
+# ── Public Routes ─────────────────────────────────────────────────────────────
 
-@pytest.fixture(scope="session")
-def engine():
-    return create_async_engine(
-        settings.SQLALCHEMY_DATABASE_URI,
-        poolclass=NullPool,
-        echo=False,
-    )
+class TestPublicRoutes:
+
+    @pytest.mark.asyncio
+    async def test_root_returns_200(self, anon_client: AsyncClient):
+        response = await anon_client.get("/")
+        assert response.status_code == 200
+        assert "message" in response.json()
+
+    @pytest.mark.asyncio
+    async def test_health_returns_ok(self, anon_client: AsyncClient):
+        response = await anon_client.get("/health")
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+
+    @pytest.mark.asyncio
+    async def test_docs_accessible(self, anon_client: AsyncClient):
+        response = await anon_client.get("/docs")
+        assert response.status_code == 200
 
 
-@pytest_asyncio.fixture(scope="session")
-async def create_tables(engine):
-    """Create all tables once for the entire test session."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
+# ── Tenant Middleware ─────────────────────────────────────────────────────────
 
+class TestTenantMiddleware:
 
-@pytest_asyncio.fixture
-async def db_session(engine, create_tables) -> AsyncSession:
-    """
-    Yields an AsyncSession wrapped in a transaction that is rolled back
-    after each test. This means each test starts with a clean slate
-    without needing to truncate tables.
-    """
-    async with engine.connect() as connection:
-        await connection.begin()
+    @pytest.mark.asyncio
+    async def test_missing_tenant_header_returns_400(self, anon_client: AsyncClient):
+        response = await anon_client.get("/debug/context")
+        assert response.status_code == 400
+        assert "X-Tenant-ID" in response.json()["detail"]
 
-        session_factory = async_sessionmaker(
-            bind=connection,
-            class_=AsyncSession,
-            expire_on_commit=False,
+    @pytest.mark.asyncio
+    async def test_invalid_tenant_id_returns_403(self, anon_client: AsyncClient):
+        response = await anon_client.get(
+            "/debug/context",
+            headers={"X-Tenant-ID": str(uuid.uuid4())},
         )
+        assert response.status_code == 403
+        assert "Invalid" in response.json()["detail"]
 
-        async with session_factory() as session:
-            yield session
-
-        await connection.rollback()
-
-
-# ── Tenant fixture ────────────────────────────────────────────────────────────
-
-@pytest_asyncio.fixture
-async def tenant(db_session: AsyncSession) -> Tenant:
-    """Creates and returns a test tenant, rolled back after the test."""
-    t = Tenant(id=uuid.uuid4(), name="Test Tenant", is_active=True)
-    db_session.add(t)
-    await db_session.commit()
-    await db_session.refresh(t)
-    return t
-
-
-@pytest.fixture
-def tenant_context(tenant: Tenant):
-    """Sets the tenant UUID in ContextVar as TenantMiddleware would."""
-    token = _tenant_id_ctx.set(tenant.id)
-    set_current_tenant(tenant.id)
-    yield tenant
-    _tenant_id_ctx.reset(token)
+    @pytest.mark.asyncio
+    async def test_valid_tenant_passes_through(self, client: AsyncClient, tenant_context):
+        """
+        tenant_context sets the ContextVar directly — TenantMiddleware._resolve_tenant
+        uses SyncSessionLocal which bypasses the get_db override and cannot see
+        the test tenant inside the rolled-back transaction.
+        The client fixture pre-sets X-Tenant-ID but middleware still hits the real DB.
+        Setting context manually is the correct approach for this test.
+        """
+        response = await client.get("/debug/context")
+        assert response.status_code == 200
+        data = response.json()
+        assert "tenant_id" in data
+        assert data["tenant_id"] == str(tenant_context.id)
 
 
-# ── FastAPI test clients ──────────────────────────────────────────────────────
+# ── Tenant Provisioning ───────────────────────────────────────────────────────
 
-@pytest_asyncio.fixture
-async def client(db_session: AsyncSession, tenant: Tenant) -> AsyncClient:
-    """
-    Async test client with:
-    - get_db overridden to use the transactional test session
-    - X-Tenant-ID header pre-set to the test tenant
-    - TenantMiddleware DB lookup bypassed via dependency override
-    """
-    async def override_get_db():
-        yield db_session
+class TestTenantProvisioning:
 
-    app.dependency_overrides[get_db] = override_get_db
+    @pytest.mark.asyncio
+    async def test_create_tenant(self, anon_client: AsyncClient, db_session: AsyncSession):
+        from app.database.session import get_db
+        from app.main import app
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test",
-        headers={"X-Tenant-ID": str(tenant.id)},
-    ) as c:
-        yield c
+        async def override():
+            yield db_session
 
-    app.dependency_overrides.clear()
+        app.dependency_overrides[get_db] = override
 
+        response = await anon_client.post(
+            "/api/v1/tenants/",
+            json={"name": "New Corp"},
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["name"] == "New Corp"
+        assert data["is_active"] is True
+        assert "id" in data
 
-@pytest_asyncio.fixture
-async def anon_client() -> AsyncClient:
-    """Test client with no tenant header — for public routes and 400/403 tests."""
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test",
-    ) as c:
-        yield c
+        app.dependency_overrides.clear()
+
+    @pytest.mark.asyncio
+    async def test_create_duplicate_tenant_returns_409(
+        self, anon_client: AsyncClient, db_session: AsyncSession
+    ):
+        from app.database.session import get_db
+        from app.main import app
+
+        async def override():
+            yield db_session
+
+        app.dependency_overrides[get_db] = override
+
+        await anon_client.post("/api/v1/tenants/", json={"name": "Dupe Corp"})
+        response = await anon_client.post("/api/v1/tenants/", json={"name": "Dupe Corp"})
+        assert response.status_code == 409
+
+        app.dependency_overrides.clear()
+
+    @pytest.mark.asyncio
+    async def test_create_tenant_name_too_short(self, anon_client: AsyncClient):
+        response = await anon_client.post(
+            "/api/v1/tenants/",
+            json={"name": "X"},
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_list_tenants(self, client: AsyncClient):
+        response = await client.get("/api/v1/tenants/")
+        assert response.status_code == 200
+        data = response.json()
+        assert "tenants" in data
+        assert "total" in data
+        assert data["total"] >= 1
+
+    @pytest.mark.asyncio
+    async def test_get_tenant_by_id(self, client: AsyncClient, tenant: Tenant):
+        response = await client.get(f"/api/v1/tenants/{tenant.id}")
+        assert response.status_code == 200
+        assert response.json()["id"] == str(tenant.id)
+
+    @pytest.mark.asyncio
+    async def test_get_nonexistent_tenant_returns_404(self, client: AsyncClient):
+        response = await client.get(f"/api/v1/tenants/{uuid.uuid4()}")
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_deactivate_tenant(self, client: AsyncClient, tenant: Tenant):
+        response = await client.patch(f"/api/v1/tenants/{tenant.id}/deactivate")
+        assert response.status_code == 200
+        assert response.json()["is_active"] is False
+
+    @pytest.mark.asyncio
+    async def test_deactivate_already_inactive_returns_409(
+        self, client: AsyncClient, tenant: Tenant
+    ):
+        await client.patch(f"/api/v1/tenants/{tenant.id}/deactivate")
+        response = await client.patch(f"/api/v1/tenants/{tenant.id}/deactivate")
+        assert response.status_code == 409
