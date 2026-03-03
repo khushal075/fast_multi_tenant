@@ -58,5 +58,9 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "pass",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
 show_missing = true
 skip_covered = false
